@@ -44,11 +44,10 @@ import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.refine.browsing.Engine;
 import com.google.refine.browsing.FilteredRows;
 import com.google.refine.browsing.facets.ScatterplotDrawingRowVisitor;
@@ -69,6 +68,11 @@ public class GetScatterplotCommand extends Command {
     @Override
     public void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
+        // This command triggers evaluation expression and therefore requires CSRF-protection.
+        if (!hasValidCSRFTokenAsGET(request)) {
+            respondCSRFError(response);
+            return;
+        }
 
         try {
             long start = System.currentTimeMillis();
@@ -81,35 +85,30 @@ public class GetScatterplotCommand extends Command {
 
             response.setHeader("Content-Type", "image/png");
 
-            ServletOutputStream sos = null;
-
-            try {
-                sos = response.getOutputStream();
+            try (ServletOutputStream sos = response.getOutputStream()) {
                 draw(sos, project, engine, conf);
-            } finally {
-                sos.close();
             }
 
             logger.trace("Drawn scatterplot in {} ms", Long.toString(System.currentTimeMillis() - start));
         } catch (Exception e) {
-            e.printStackTrace();
             respondException(response, e);
         }
     }
 
     protected static class PlotterConfig {
+
         @JsonProperty(ScatterplotFacet.SIZE)
         public int size = 100;
         @JsonProperty(ScatterplotFacet.DOT)
         double dot = 100;
-        @JsonIgnore
-        public int dim_x = ScatterplotFacet.LIN;
-        @JsonIgnore
-        public int dim_y = ScatterplotFacet.LIN;
+        @JsonProperty(ScatterplotFacet.DIM_X)
+        public ScatterplotFacet.LinLog dim_x = ScatterplotFacet.LinLog.LIN;
+        @JsonProperty(ScatterplotFacet.DIM_Y)
+        public ScatterplotFacet.LinLog dim_y = ScatterplotFacet.LinLog.LIN;
         @JsonProperty(ScatterplotFacet.ROTATION)
-        public int rotation = ScatterplotFacet.NO_ROTATION;
+        public ScatterplotFacet.Rotation rotation = ScatterplotFacet.Rotation.NO_ROTATION;
         @JsonProperty(ScatterplotFacet.COLOR)
-        public String color_str = "000000";
+        public String color_str = "000000"; // TODO: Can this be simplified to set color directly (if we keep it)?
         @JsonProperty(ScatterplotFacet.BASE_COLOR)
         public String base_color_str = null;
         @JsonProperty(ScatterplotFacet.X_COLUMN_NAME)
@@ -121,31 +120,6 @@ public class GetScatterplotCommand extends Command {
         @JsonProperty(ScatterplotFacet.Y_EXPRESSION)
         public String expression_y = "value";
 
-        @JsonProperty(ScatterplotFacet.DIM_X)
-        public String getDimX() {
-            return dim_x == ScatterplotFacet.LIN ? "lin" : "log";
-        }
-
-        @JsonProperty(ScatterplotFacet.DIM_Y)
-        public String getDimY() {
-            return dim_y == ScatterplotFacet.LIN ? "lin" : "log";
-        }
-
-        @JsonProperty(ScatterplotFacet.DIM_X)
-        public void setDimX(String dim) {
-            dim_x = dim.equals("lin") ? ScatterplotFacet.LIN : ScatterplotFacet.LOG;
-        }
-
-        @JsonProperty(ScatterplotFacet.DIM_Y)
-        public void setDimY(String dim) {
-            dim_y = dim.equals("lin") ? ScatterplotFacet.LIN : ScatterplotFacet.LOG;
-        }
-
-        // rotation can be set to "none" (a JSON string) in which case it should be ignored
-        @JsonProperty(ScatterplotFacet.ROTATION)
-        public void setRotation(Object rotation) {
-            this.rotation = ScatterplotFacet.ScatterplotFacetConfig.getRotation(rotation.toString());
-        }
     }
 
     public void draw(OutputStream output, Project project, Engine engine, PlotterConfig o) throws IOException {
@@ -165,7 +139,7 @@ public class GetScatterplotCommand extends Command {
 
         Color base_color = o.base_color_str != null ? new Color(Integer.parseInt(o.base_color_str, 16)) : null;
 
-        if (o.columnName_x.length() > 0) {
+        if (!o.columnName_x.isEmpty()) {
             Column x_column = project.columnModel.getColumnByName(o.columnName_x);
             if (x_column != null) {
                 columnIndex_x = x_column.getCellIndex();
@@ -180,7 +154,7 @@ public class GetScatterplotCommand extends Command {
             logger.warn("error parsing expression", e);
         }
 
-        if (o.columnName_y.length() > 0) {
+        if (!o.columnName_y.isEmpty()) {
             Column y_column = project.columnModel.getColumnByName(o.columnName_y);
             if (y_column != null) {
                 columnIndex_y = y_column.getCellIndex();
@@ -217,8 +191,7 @@ public class GetScatterplotCommand extends Command {
         if (index_x != null && index_y != null && index_x.isNumeric() && index_y.isNumeric()) {
             ScatterplotDrawingRowVisitor drawer = new ScatterplotDrawingRowVisitor(
                     columnIndex_x, columnIndex_y, min_x, max_x, min_y, max_y,
-                    o.size, o.dim_x, o.dim_y, o.rotation, o.dot, color
-            );
+                    o.size, o.dim_x, o.dim_y, o.rotation, o.dot, color);
 
             if (base_color != null) {
                 drawer.setColor(base_color);
